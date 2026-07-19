@@ -10,10 +10,13 @@ Neurosymbolic here means retrieval that combines:
 
 Those signals are fused at query time so symbol-aware questions (APIs, config keys) and natural-language questions both work offline after indexing.
 
+Indexes are saved with a **name** and **version**, can be published to an **S3 registry**, and browsed through a small **web server**.
+
 ## Requirements
 
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv)
+- AWS credentials (only required for S3 registry publish/pull)
 
 ## Install
 
@@ -26,33 +29,77 @@ This creates `.venv` and installs the `docs-search` CLI.
 ## Quick start
 
 ```bash
-# Build a local index from a GitHub repo (docs/, README, etc.)
-uv run docs-search index astral-sh/uv
+# Build a named/versioned local index from a GitHub repo
+uv run docs-search index astral-sh/uv --name uv-docs --index-version 1.0.0
 
 # Search it
-uv run docs-search search "how do I add a dependency?" --repo astral-sh/uv
+uv run docs-search search "how do I add a dependency?" --name uv-docs --index-version 1.0.0
 
-# List indexes
+# List local indexes
 uv run docs-search list
 ```
 
-Indexes live under `~/.docs-search/indexes/` by default. Cloned repos live under `~/.docs-search/repos/`.
+Indexes live under `~/.docs-search/indexes/<name>/<version>/` by default. Cloned repos live under `~/.docs-search/repos/`.
 
 ### Local directory
 
 ```bash
-uv run docs-search index ./path/to/docs --local
+uv run docs-search index ./path/to/docs --local --name my-docs --index-version 0.1.0
 ```
 
 ### Useful options
 
 ```bash
-uv run docs-search index owner/repo --include docs --include README.md
-uv run docs-search search "WidgetFactory.create" -r owner/repo -k 8
-uv run docs-search search "timeout retries" -r owner/repo --json
+uv run docs-search index owner/repo --name owner-docs --index-version 1.2.0 --include docs
+uv run docs-search search "WidgetFactory.create" -n owner-docs -V 1.2.0 -k 8
+uv run docs-search search "timeout retries" -n owner-docs --json
 ```
 
 Fusion weights can be tuned with `--neural`, `--lexical`, and `--symbolic`.
+
+## S3 registry
+
+Link a shared S3 prefix where published indexes are stored:
+
+```bash
+uv run docs-search registry set-url s3://my-bucket/docs-search
+uv run docs-search registry url
+
+# Publish a local index
+uv run docs-search publish --name uv-docs --index-version 1.0.0
+
+# List remote indexes
+uv run docs-search registry list
+
+# Pull into the local index directory
+uv run docs-search pull uv-docs 1.0.0
+```
+
+Registry layout:
+
+```text
+s3://bucket/prefix/
+  registry.json
+  indices/<name>/<version>/meta.json
+  indices/<name>/<version>/index.tar.gz
+```
+
+The registry URL is saved in `~/.docs-search/config.json`. Override per command with `--registry s3://…`.
+
+## Web server
+
+Browse local indexes and the linked S3 registry:
+
+```bash
+uv run docs-search serve
+# open http://127.0.0.1:8787
+```
+
+JSON endpoints:
+
+- `GET /api/local` — local indexes
+- `GET /api/registry` — registry indexes
+- `GET /api/health` — health check
 
 ## How it works
 
@@ -60,7 +107,8 @@ Fusion weights can be tuned with `--neural`, `--lexical`, and `--symbolic`.
 2. **Symbolic extract** — split markdown into heading-aware chunks; pull inline/fenced code symbols and markdown links.
 3. **Knowledge graph** — connect `doc → chunk → symbol`, heading hierarchy, and `LINKS_TO` relations (`networkx`).
 4. **Neural embed** — embed each chunk with `BAAI/bge-small-en-v1.5` via `fastembed`.
-5. **Search** — run dense + BM25 retrieval, expand candidates through the graph, fuse scores, return snippets with matched symbols and graph hops.
+5. **Save** — persist the index under a name + version.
+6. **Search / publish / serve** — hybrid search locally, optionally publish to S3, and browse via the web UI.
 
 ```text
 Query ─┬─► neural similarity
@@ -81,7 +129,12 @@ uv run ruff check src tests
 | Command | Purpose |
 |---------|---------|
 | `docs-search ingest <repo>` | Clone/update only |
-| `docs-search index <repo>` | Clone + build neurosymbolic index |
-| `docs-search search <query>` | Hybrid local search |
-| `docs-search list` | Show indexed repos |
-| `docs-search version` | Print version |
+| `docs-search index <repo> --name … --index-version …` | Clone + build named/versioned index |
+| `docs-search search <query> --name …` | Hybrid local search |
+| `docs-search list` | Show local name/version indexes |
+| `docs-search publish` | Upload a local index to the S3 registry |
+| `docs-search pull <name> <version>` | Download an index from the registry |
+| `docs-search registry set-url s3://…` | Link this machine to an S3 registry |
+| `docs-search registry list` | List published registry indexes |
+| `docs-search serve` | Web UI for local + registry indexes |
+| `docs-search version` | Print package version |

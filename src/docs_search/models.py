@@ -41,6 +41,10 @@ class SearchHit(BaseModel):
 
 
 class IndexMeta(BaseModel):
+    """Metadata for a saved documentation index."""
+
+    name: str
+    version: str
     repo: str
     source: str
     chunk_count: int
@@ -48,3 +52,33 @@ class IndexMeta(BaseModel):
     edge_count: int
     embed_model: str
     created_at: str
+
+    def key(self) -> str:
+        return f"{self.name}@{self.version}"
+
+
+class RegistryEntry(BaseModel):
+    """One published index listed in an S3 registry manifest."""
+
+    name: str
+    version: str
+    repo: str
+    source: str = ""
+    chunk_count: int = 0
+    symbol_count: int = 0
+    edge_count: int = 0
+    embed_model: str = ""
+    created_at: str = ""
+    s3_key: str = ""
+    size_bytes: int = 0
+    published_at: str = ""
+
+    def key(self) -> str:
+        return f"{self.name}@{self.version}"
+
+
+class RegistryManifest(BaseModel):
+    """Root manifest stored at the registry prefix."""
+
+    updated_at: str = ""
+    indices: list[RegistryEntry] = Field(default_factory=list)

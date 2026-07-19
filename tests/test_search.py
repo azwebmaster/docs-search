@@ -29,14 +29,23 @@ def test_neurosymbolic_search_ranks_relevant_chunk(tmp_path, monkeypatch):
     meta = index_local_path(
         FIXTURE,
         repo_slug="local/sample",
+        name="sample",
+        version="1.0.0",
         index_dir=tmp_path / "indexes",
         include_dirs=["."],
         embed_model="fake-model",
     )
     assert meta.chunk_count >= 2
     assert meta.symbol_count >= 1
+    assert meta.name == "sample"
+    assert meta.version == "1.0.0"
 
-    index = NeurosymbolicIndex.load("local/sample", index_dir=tmp_path / "indexes")
+    index = NeurosymbolicIndex.load(
+        "local/sample",
+        index_dir=tmp_path / "indexes",
+        name="sample",
+        version="1.0.0",
+    )
     hits = index.search("How do I create a widget with WidgetFactory?", top_k=3)
     assert hits
     top = hits[0]
