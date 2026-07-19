@@ -50,19 +50,39 @@ class NeurosymbolicIndex:
         *,
         name: str | None = None,
         version: str | None = None,
+        pull_missing: bool = True,
+        registry_url: str | None = None,
+        registry_client=None,
+        on_pull=None,
     ) -> NeurosymbolicIndex:
-        store = resolve_store(
+        """Load a neurosymbolic index from disk.
+
+        When ``name`` is provided and the index is not local, ``pull_missing``
+        (default True) downloads it from the configured S3 registry.
+        """
+        from docs_search.registry import ensure_local_index
+
+        meta = ensure_local_index(
             name=name,
             version=version,
             repo=repo_slug,
             index_dir=index_dir,
+            registry_url=registry_url,
+            client=registry_client,
+            pull_missing=pull_missing and bool(name),
+            on_pull=on_pull,
+        )
+        store = resolve_store(
+            name=meta.name,
+            version=meta.version,
+            repo=meta.repo,
+            index_dir=index_dir,
         )
         if not store.exists():
-            label = name or repo_slug or "index"
+            label = meta.name or repo_slug or "index"
             raise FileNotFoundError(
                 f"No local index for {label!r}. Run: docs-search index <source> --name …"
             )
-        meta = store.load_meta()
         return cls(
             repo=meta.repo,
             chunks=store.load_chunks(),

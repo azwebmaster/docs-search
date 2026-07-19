@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 from docs_search.config import default_name_from_repo, set_registry_url
 from docs_search.index_builder import index_local_path
 from docs_search.models import RegistryManifest
-from docs_search.registry import S3Registry, parse_registry_url, publish_local_index, pull_registry_index
+from docs_search.registry import (
+    S3Registry,
+    ensure_local_index,
+    parse_registry_url,
+    publish_local_index,
+    pull_registry_index,
+)
 from docs_search.search import NeurosymbolicIndex
 from docs_search.server import create_app
 from docs_search.store import IndexStore, find_index, list_indexes
@@ -174,6 +180,125 @@ def test_publish_helper_uses_config(indexed, tmp_path, monkeypatch):
         client=fake,
     )
     assert pulled.name == meta.name
+
+
+def test_search_auto_pulls_missing_named_index(indexed, tmp_path, monkeypatch):
+    meta, index_dir = indexed
+    fake = FakeS3()
+    registry_url = "s3://auto-pull-bucket/reg"
+    S3Registry(registry_url, client=fake).publish(meta, index_dir=index_dir)
+    monkeypatch.setattr(
+        "docs_search.registry.get_registry_url",
+        lambda: registry_url,
+    )
+
+    empty_dir = tmp_path / "empty-indexes"
+    empty_dir.mkdir()
+    pulled_versions: list[tuple[str, str]] = []
+
+    index = NeurosymbolicIndex.load(
+        name="sample-docs",
+        index_dir=empty_dir,
+        registry_url=registry_url,
+        registry_client=fake,
+        on_pull=lambda n, v: pulled_versions.append((n, v)),
+    )
+    assert pulled_versions == [("sample-docs", "1.2.0")]
+    assert (empty_dir / "sample-docs" / "1.2.0" / "meta.json").exists()
+    hits = index.search("widget")
+    assert hits
+
+
+def test_ensure_local_index_pulls_latest_when_version_omitted(indexed, tmp_path, monkeypatch):
+    meta, index_dir = indexed
+    fake = FakeS3()
+    registry_url = "s3://latest-bucket/reg"
+    reg = S3Registry(registry_url, client=fake)
+    reg.publish(meta, index_dir=index_dir)
+
+    # Publish a second version with newer published_at by re-indexing.
+    newer = index_local_path(
+        FIXTURE,
+        repo_slug="local/sample",
+        name="sample-docs",
+        version="2.0.0",
+        index_dir=index_dir,
+        include_dirs=["."],
+        embed_model="fake-model",
+    )
+    reg.publish(newer, index_dir=index_dir)
+
+    monkeypatch.setattr(
+        "docs_search.registry.get_registry_url",
+        lambda: registry_url,
+    )
+    empty_dir = tmp_path / "pulled-latest"
+    ensured = ensure_local_index(
+        name="sample-docs",
+        index_dir=empty_dir,
+        registry_url=registry_url,
+        client=fake,
+    )
+    assert ensured.version == "2.0.0"
+    assert (empty_dir / "sample-docs" / "2.0.0" / "embeddings.npy").exists()
+
+
+def test_ensure_local_index_no_pull_without_name(indexed, tmp_path):
+    _, index_dir = indexed
+    with pytest.raises(FileNotFoundError):
+        ensure_local_index(
+            name=None,
+            repo="missing/repo",
+            index_dir=index_dir,
+            pull_missing=True,
+        )
+
+
+def test_load_respects_no_pull(indexed, tmp_path, monkeypatch):
+    meta, index_dir = indexed
+    fake = FakeS3()
+    registry_url = "s3://nopull-bucket/reg"
+    S3Registry(registry_url, client=fake).publish(meta, index_dir=index_dir)
+    monkeypatch.setattr(
+        "docs_search.registry.get_registry_url",
+        lambda: registry_url,
+    )
+    empty_dir = tmp_path / "still-empty"
+    empty_dir.mkdir()
+    with pytest.raises(FileNotFoundError):
+        NeurosymbolicIndex.load(
+            name="sample-docs",
+            index_dir=empty_dir,
+            pull_missing=False,
+            registry_url=registry_url,
+            registry_client=fake,
+        )
+
+
+def test_find_entry_returns_exact_and_latest(indexed, tmp_path):
+    meta, index_dir = indexed
+    fake = FakeS3()
+    reg = S3Registry("s3://find-bucket/reg", client=fake)
+    reg.publish(meta, index_dir=index_dir)
+    newer = index_local_path(
+        FIXTURE,
+        repo_slug="local/sample",
+        name="sample-docs",
+        version="9.9.9",
+        index_dir=index_dir,
+        include_dirs=["."],
+        embed_model="fake-model",
+    )
+    reg.publish(newer, index_dir=index_dir)
+
+    exact = reg.find_entry("sample-docs", "1.2.0")
+    assert exact is not None
+    assert exact.version == "1.2.0"
+    latest = reg.find_entry("sample-docs")
+    assert latest is not None
+    assert latest.version == "9.9.9"
+    assert reg.find_entry("sample-docs", "0.0.1") is None
+    assert reg.find_entry("missing-name") is None
 
 
 def test_web_server_lists_local_and_registry(indexed, tmp_path):

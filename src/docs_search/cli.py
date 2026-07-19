@@ -164,12 +164,29 @@ def search_cmd(
     neural: float = typer.Option(DEFAULT_NEURAL_WEIGHT, "--neural"),
     lexical: float = typer.Option(DEFAULT_LEXICAL_WEIGHT, "--lexical"),
     symbolic: float = typer.Option(DEFAULT_SYMBOLIC_WEIGHT, "--symbolic"),
+    registry: Optional[str] = typer.Option(
+        None,
+        "--registry",
+        help="s3://bucket/prefix used when downloading a missing named index",
+    ),
+    no_pull: bool = typer.Option(
+        False,
+        "--no-pull",
+        help="Do not download a missing named index from the registry",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON results"),
 ) -> None:
-    """Run neurosymbolic hybrid search over a local index."""
+    """Run neurosymbolic hybrid search over a local index.
+
+    If ``--name`` is given and that index is not local, it is downloaded from the
+    S3 registry automatically (unless ``--no-pull``).
+    """
     metas = list_indexes(index_dir)
-    if not metas:
-        console.print("[red]No indexes found.[/red] Run: docs-search index owner/repo --name …")
+    if not metas and name is None:
+        console.print(
+            "[red]No indexes found.[/red] Pass --name to download from the registry, "
+            "or run: docs-search index owner/repo --name …"
+        )
         raise typer.Exit(code=1)
 
     if repo is not None:
@@ -190,12 +207,21 @@ def search_cmd(
             console.print(f"[red]Multiple indexes:[/red] {labels}. Pass --name or --repo.")
             raise typer.Exit(code=1)
 
+    def _on_pull(pulled_name: str, pulled_version: str) -> None:
+        console.print(
+            f"[dim]Index not found locally; downloading {pulled_name}@{pulled_version} "
+            f"from registry…[/dim]"
+        )
+
     try:
         index = NeurosymbolicIndex.load(
             repo,
             index_dir=index_dir,
             name=name,
             version=index_version,
+            pull_missing=not no_pull,
+            registry_url=registry,
+            on_pull=_on_pull,
         )
     except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -306,7 +332,10 @@ def publish_cmd(
 @app.command("pull")
 def pull_cmd(
     name: str = typer.Argument(..., help="Index name in the registry"),
-    index_version: str = typer.Argument(..., help="Index version in the registry"),
+    index_version: Optional[str] = typer.Argument(
+        None,
+        help="Index version in the registry (default: newest published)",
+    ),
     registry: Optional[str] = typer.Option(
         None,
         "--registry",

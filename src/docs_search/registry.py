@@ -176,35 +176,53 @@ class S3Registry:
     def pull(
         self,
         name: str,
-        version: str,
+        version: str | None = None,
         *,
         index_dir: Path | None = None,
     ) -> IndexMeta:
-        """Download a registry index into the local index directory."""
-        name = sanitize_index_name(name)
-        version = sanitize_index_version(version)
-        entry = self.get_entry(name, version)
+        """Download a registry index into the local index directory.
+
+        When ``version`` is omitted, pulls the newest published entry for ``name``.
+        """
+        entry = self.find_entry(name, version)
         if entry is None:
-            raise FileNotFoundError(f"Registry has no index {name}@{version}")
+            label = f"{name}@{version}" if version else name
+            raise FileNotFoundError(f"Registry has no index {label}")
 
         with tempfile.TemporaryDirectory(prefix="docs-search-pull-") as tmp:
             archive = Path(tmp) / "index.tar.gz"
             self.client.download_file(self.location.bucket, entry.s3_key, str(archive))
             store = IndexStore.extract_tarball(
                 archive,
-                name=name,
-                version=version,
+                name=entry.name,
+                version=entry.version,
                 index_dir=index_dir or DEFAULT_INDEX_DIR,
             )
             return store.load_meta()
 
-    def get_entry(self, name: str, version: str) -> RegistryEntry | None:
+    def find_entry(self, name: str, version: str | None = None) -> RegistryEntry | None:
+        """Find a registry entry by name, optionally pinned to a version.
+
+        When ``version`` is omitted, returns the newest entry for ``name``
+        (by ``published_at``, then ``created_at``).
+        """
         name = sanitize_index_name(name)
-        version = sanitize_index_version(version)
-        for entry in self.list_entries():
-            if entry.name == name and entry.version == version:
-                return entry
-        return None
+        entries = [e for e in self.list_entries() if e.name == name]
+        if version is not None:
+            version = sanitize_index_version(version)
+            for entry in entries:
+                if entry.version == version:
+                    return entry
+            return None
+        if not entries:
+            return None
+        return sorted(
+            entries,
+            key=lambda e: (e.published_at or "", e.created_at or ""),
+        )[-1]
+
+    def get_entry(self, name: str, version: str) -> RegistryEntry | None:
+        return self.find_entry(name, version)
 
 
 def publish_local_index(
@@ -223,7 +241,7 @@ def publish_local_index(
 
 def pull_registry_index(
     name: str,
-    version: str,
+    version: str | None = None,
     *,
     registry_url: str | None = None,
     index_dir: Path | None = None,
@@ -231,6 +249,52 @@ def pull_registry_index(
 ) -> IndexMeta:
     registry = S3Registry(resolve_registry_url(registry_url), client=client)
     return registry.pull(name, version, index_dir=index_dir)
+
+
+def ensure_local_index(
+    *,
+    name: str | None = None,
+    version: str | None = None,
+    repo: str | None = None,
+    index_dir: Path | None = None,
+    registry_url: str | None = None,
+    client: Any | None = None,
+    pull_missing: bool = True,
+    on_pull: Any | None = None,
+) -> IndexMeta:
+    """Return a local index, downloading from the registry when missing.
+
+    When ``pull_missing`` is true and a ``name`` is given, a missing local index
+    is fetched from the configured S3 registry (latest version if ``version`` is
+    omitted). Searching by repo alone does not trigger a download.
+    """
+    try:
+        return find_index(name=name, version=version, repo=repo, index_dir=index_dir)
+    except FileNotFoundError as local_exc:
+        if not pull_missing or not name:
+            raise
+
+        try:
+            resolved_url = resolve_registry_url(registry_url)
+        except ValueError as exc:
+            raise FileNotFoundError(
+                f"No local index for {name!r}"
+                + (f" version={version!r}" if version else "")
+                + f". {exc}"
+            ) from local_exc
+
+        registry = S3Registry(resolved_url, client=client)
+        entry = registry.find_entry(name, version)
+        if entry is None:
+            label = f"{name}@{version}" if version else name
+            raise FileNotFoundError(
+                f"No local index for {label!r} and registry has no matching entry"
+            ) from local_exc
+
+        if on_pull is not None:
+            on_pull(entry.name, entry.version)
+
+        return registry.pull(entry.name, entry.version, index_dir=index_dir)
 
 
 def list_registry_entries(
