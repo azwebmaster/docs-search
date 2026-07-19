@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -24,6 +25,13 @@ CHUNK_MAX_CHARS = 1200
 CHUNK_OVERLAP_CHARS = 120
 
 DEFAULT_INDEX_VERSION = "0.1.0"
+
+# OpenAI-compatible chat API used by RAG (`docs-search ask`).
+DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_LLM_MODEL = "gpt-4o-mini"
+DEFAULT_RAG_TOP_K = 5
+DEFAULT_RAG_TEMPERATURE = 0.2
+DEFAULT_RAG_MAX_TOKENS = 1024
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -80,3 +88,47 @@ def set_registry_url(url: str, path: Path | None = None) -> Path:
     data = load_user_config(path)
     data["registry_url"] = url.strip()
     return save_user_config(data, path)
+
+
+def get_llm_base_url(path: Path | None = None) -> str:
+    """Resolve the OpenAI-compatible API base URL.
+
+    Precedence: ``DOCS_SEARCH_LLM_BASE_URL`` → ``OPENAI_BASE_URL`` →
+    config ``llm_base_url`` → default OpenAI URL.
+    """
+    for key in ("DOCS_SEARCH_LLM_BASE_URL", "OPENAI_BASE_URL"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value.rstrip("/")
+    cfg = load_user_config(path).get("llm_base_url")
+    if isinstance(cfg, str) and cfg.strip():
+        return cfg.strip().rstrip("/")
+    return DEFAULT_LLM_BASE_URL
+
+
+def get_llm_model(path: Path | None = None) -> str:
+    """Resolve the chat model name for RAG generation."""
+    for key in ("DOCS_SEARCH_LLM_MODEL", "OPENAI_MODEL"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    cfg = load_user_config(path).get("llm_model")
+    if isinstance(cfg, str) and cfg.strip():
+        return cfg.strip()
+    return DEFAULT_LLM_MODEL
+
+
+def get_llm_api_key(path: Path | None = None) -> str | None:
+    """Resolve the API key for the chat provider.
+
+    Precedence: ``DOCS_SEARCH_LLM_API_KEY`` → ``OPENAI_API_KEY`` →
+    config ``llm_api_key``. Local servers (e.g. Ollama) may omit a key.
+    """
+    for key in ("DOCS_SEARCH_LLM_API_KEY", "OPENAI_API_KEY"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    cfg = load_user_config(path).get("llm_api_key")
+    if isinstance(cfg, str) and cfg.strip():
+        return cfg.strip()
+    return None

@@ -35,6 +35,9 @@ uv run docs-search index astral-sh/uv --name uv-docs --index-version 1.0.0
 # Search it
 uv run docs-search search "how do I add a dependency?" --name uv-docs --index-version 1.0.0
 
+# Ask a question with retrieval-augmented generation (OpenAI-compatible LLM)
+uv run docs-search ask "how do I add a dependency?" --name uv-docs --index-version 1.0.0
+
 # Search a named index that is not local yet — downloads from the S3 registry first
 uv run docs-search search "how do I add a dependency?" --name uv-docs
 
@@ -61,6 +64,31 @@ uv run docs-search search "timeout retries" -n owner-docs --json
 ```
 
 Fusion weights can be tuned with `--neural`, `--lexical`, and `--symbolic`.
+
+## RAG answers
+
+`docs-search ask` retrieves hybrid search hits, then asks an **OpenAI-compatible**
+chat model to answer using only those excerpts (with citations).
+
+```bash
+export OPENAI_API_KEY=sk-...
+uv run docs-search ask "how do I add a dependency?" --name uv-docs
+
+# Or use a local server such as Ollama
+export DOCS_SEARCH_LLM_BASE_URL=http://127.0.0.1:11434/v1
+export DOCS_SEARCH_LLM_MODEL=llama3.2
+uv run docs-search ask "how do I add a dependency?" --name uv-docs --no-pull
+```
+
+Configuration (first match wins):
+
+| Setting | Env / config |
+|---------|----------------|
+| API key | `DOCS_SEARCH_LLM_API_KEY` → `OPENAI_API_KEY` → `llm_api_key` in `~/.docs-search/config.json` |
+| Base URL | `DOCS_SEARCH_LLM_BASE_URL` → `OPENAI_BASE_URL` → `llm_base_url` (default `https://api.openai.com/v1`) |
+| Model | `DOCS_SEARCH_LLM_MODEL` → `OPENAI_MODEL` → `llm_model` (default `gpt-4o-mini`) |
+
+CLI overrides: `--model`, `--base-url`, `--api-key`. Use `--json` for machine-readable output.
 
 ## S3 registry
 
@@ -108,6 +136,8 @@ JSON endpoints:
 - `GET /api/local` — local indexes
 - `GET /api/registry` — registry indexes
 - `GET /api/health` — health check
+- `POST /api/search` — hybrid search (`{"query": "…", "name": "…"}`)
+- `POST /api/ask` — RAG answer (`{"query": "…", "name": "…"}` plus optional `model` / `base_url` / `api_key`)
 
 ## How it works
 
@@ -116,12 +146,14 @@ JSON endpoints:
 3. **Knowledge graph** — connect `doc → chunk → symbol`, heading hierarchy, and `LINKS_TO` relations (`networkx`).
 4. **Neural embed** — embed each chunk with `BAAI/bge-small-en-v1.5` via `fastembed`.
 5. **Save** — persist the index under a name + version.
-6. **Search / publish / serve** — hybrid search locally, optionally publish to S3, and browse via the web UI.
+6. **Search / ask / publish / serve** — hybrid search locally, optionally answer with RAG, publish to S3, and browse via the web UI.
 
 ```text
 Query ─┬─► neural similarity
        ├─► BM25 lexical scores
        └─► symbol/graph expansion  ─► fused ranking ─► local hits
+                                              │
+                                              └─► (ask) LLM grounded answer + citations
 ```
 
 ## Development
@@ -139,6 +171,7 @@ uv run ruff check src tests
 | `docs-search ingest <repo>` | Clone/update only |
 | `docs-search index <repo> --name … --index-version …` | Clone + build named/versioned index |
 | `docs-search search <query> --name …` | Hybrid search (auto-downloads missing named indexes) |
+| `docs-search ask <question> --name …` | RAG answer over retrieved docs (OpenAI-compatible LLM) |
 | `docs-search list` | Show local name/version indexes |
 | `docs-search publish` | Upload a local index to the S3 registry |
 | `docs-search pull <name> [version]` | Download an index from the registry |
