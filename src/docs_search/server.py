@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import html
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from docs_search.config import DEFAULT_INDEX_DIR, get_registry_url
+from pydantic import BaseModel, Field
+
+from docs_search.config import (
+    DEFAULT_INDEX_DIR,
+    DEFAULT_LEXICAL_WEIGHT,
+    DEFAULT_NEURAL_WEIGHT,
+    DEFAULT_RAG_TOP_K,
+    DEFAULT_SYMBOLIC_WEIGHT,
+    get_registry_url,
+)
 from docs_search.models import IndexMeta, RegistryEntry
 from docs_search.store import list_indexes
 
@@ -15,6 +24,24 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError(
         "fastapi is required for the web server. Install with: uv sync"
     ) from exc
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    name: Optional[str] = None
+    version: Optional[str] = None
+    repo: Optional[str] = None
+    top_k: int = Field(default=DEFAULT_RAG_TOP_K, ge=1, le=50)
+    neural_weight: float = DEFAULT_NEURAL_WEIGHT
+    lexical_weight: float = DEFAULT_LEXICAL_WEIGHT
+    symbolic_weight: float = DEFAULT_SYMBOLIC_WEIGHT
+    pull_missing: bool = True
+
+
+class AskRequest(SearchRequest):
+    model: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 def create_app(
@@ -46,6 +73,53 @@ def create_app(
             return reg.url, reg.list_entries(), None
         except Exception as exc:  # noqa: BLE001 - surface registry errors in UI/API
             return configured_registry, [], str(exc)
+
+    def _load_index(
+        *,
+        name: str | None,
+        version: str | None,
+        repo: str | None,
+        pull_missing: bool,
+    ):
+        from docs_search.ingest import normalize_github_source
+        from docs_search.search import NeurosymbolicIndex
+
+        resolved_repo = repo
+        if resolved_repo is not None:
+            try:
+                resolved_repo = normalize_github_source(resolved_repo)[1]
+            except ValueError:
+                pass
+
+        metas = _local()
+        resolved_name = name
+        if resolved_name is None and resolved_repo is None:
+            names = sorted({m.name for m in metas})
+            if len(names) == 1:
+                resolved_name = names[0]
+            elif len(metas) == 1:
+                resolved_name = metas[0].name
+                resolved_repo = metas[0].repo
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Pass name or repo when multiple local indexes exist",
+                )
+
+        try:
+            return NeurosymbolicIndex.load(
+                resolved_repo,
+                index_dir=resolved_index_dir,
+                name=resolved_name,
+                version=version,
+                pull_missing=pull_missing and bool(resolved_name),
+                registry_url=configured_registry,
+                registry_client=registry_client,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -82,6 +156,57 @@ def create_app(
                 payload["registry_url"] = url
                 return payload
         raise HTTPException(status_code=404, detail=f"Registry index {name}@{version} not found")
+
+    @app.post("/api/search")
+    def api_search(body: SearchRequest) -> dict[str, Any]:
+        index = _load_index(
+            name=body.name,
+            version=body.version,
+            repo=body.repo,
+            pull_missing=body.pull_missing,
+        )
+        hits = index.search(
+            body.query,
+            top_k=body.top_k,
+            neural_weight=body.neural_weight,
+            lexical_weight=body.lexical_weight,
+            symbolic_weight=body.symbolic_weight,
+        )
+        return {
+            "query": body.query,
+            "index_name": index.name,
+            "index_version": index.version,
+            "repo": index.repo,
+            "hits": [h.model_dump() for h in hits],
+        }
+
+    @app.post("/api/ask")
+    def api_ask(body: AskRequest) -> dict[str, Any]:
+        from docs_search.rag import RagError, ask
+
+        index = _load_index(
+            name=body.name,
+            version=body.version,
+            repo=body.repo,
+            pull_missing=body.pull_missing,
+        )
+        try:
+            result = ask(
+                index,
+                body.query,
+                top_k=body.top_k,
+                neural_weight=body.neural_weight,
+                lexical_weight=body.lexical_weight,
+                symbolic_weight=body.symbolic_weight,
+                model=body.model,
+                base_url=body.base_url,
+                api_key=body.api_key,
+            )
+        except RagError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result.model_dump()
 
     @app.get("/", response_class=HTMLResponse)
     def home(q: str | None = Query(default=None)) -> HTMLResponse:
@@ -347,7 +472,9 @@ def _render_page(
       JSON API:
       <a href="/api/local">/api/local</a> ·
       <a href="/api/registry">/api/registry</a> ·
-      <a href="/api/health">/api/health</a>
+      <a href="/api/health">/api/health</a> ·
+      POST /api/search ·
+      POST /api/ask
     </footer>
   </main>
 </body>

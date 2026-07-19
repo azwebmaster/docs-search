@@ -40,6 +40,31 @@ class SearchHit(BaseModel):
     graph_hops: list[str] = Field(default_factory=list)
 
 
+class RagSource(BaseModel):
+    """A retrieved documentation chunk cited by a RAG answer."""
+
+    chunk_id: str
+    repo: str
+    path: str
+    title: str
+    heading_path: list[str] = Field(default_factory=list)
+    snippet: str
+    text: str = ""
+    score: float = 0.0
+
+
+class RagAnswer(BaseModel):
+    """Answer produced by retrieval-augmented generation over an index."""
+
+    question: str
+    answer: str
+    sources: list[RagSource] = Field(default_factory=list)
+    model: str = ""
+    index_name: str | None = None
+    index_version: str | None = None
+    repo: str | None = None
+
+
 class IndexMeta(BaseModel):
     """Metadata for a saved documentation index."""
 

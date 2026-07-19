@@ -34,6 +34,8 @@ class NeurosymbolicIndex:
     embeddings: np.ndarray
     graph: object
     embed_model: str = DEFAULT_EMBED_MODEL
+    name: str | None = None
+    version: str | None = None
     _bm25: BM25Okapi | None = None
     _id_to_idx: dict[str, int] | None = None
 
@@ -41,6 +43,12 @@ class NeurosymbolicIndex:
         corpus = [tokenize(c.text) for c in self.chunks]
         self._bm25 = BM25Okapi(corpus) if corpus else None
         self._id_to_idx = {c.id: i for i, c in enumerate(self.chunks)}
+
+    def chunk_by_id(self, chunk_id: str) -> DocChunk | None:
+        idx = self._id_to_idx.get(chunk_id) if self._id_to_idx else None
+        if idx is None:
+            return None
+        return self.chunks[idx]
 
     @classmethod
     def load(
@@ -89,6 +97,8 @@ class NeurosymbolicIndex:
             embeddings=store.load_embeddings(),
             graph=store.load_graph(),
             embed_model=meta.embed_model,
+            name=meta.name,
+            version=meta.version,
         )
 
     def search(

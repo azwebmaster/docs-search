@@ -14,9 +14,13 @@ from docs_search.config import (
     DEFAULT_INDEX_DIR,
     DEFAULT_INDEX_VERSION,
     DEFAULT_LEXICAL_WEIGHT,
+    DEFAULT_LLM_MODEL,
     DEFAULT_NEURAL_WEIGHT,
+    DEFAULT_RAG_TOP_K,
     DEFAULT_REPOS_DIR,
     DEFAULT_SYMBOLIC_WEIGHT,
+    get_llm_base_url,
+    get_llm_model,
     get_registry_url,
     set_registry_url,
 )
@@ -181,31 +185,7 @@ def search_cmd(
     If ``--name`` is given and that index is not local, it is downloaded from the
     S3 registry automatically (unless ``--no-pull``).
     """
-    metas = list_indexes(index_dir)
-    if not metas and name is None:
-        console.print(
-            "[red]No indexes found.[/red] Pass --name to download from the registry, "
-            "or run: docs-search index owner/repo --name …"
-        )
-        raise typer.Exit(code=1)
-
-    if repo is not None:
-        try:
-            repo = normalize_github_source(repo)[1]
-        except ValueError:
-            pass
-
-    if name is None and repo is None:
-        names = sorted({m.name for m in metas})
-        if len(names) == 1:
-            name = names[0]
-        elif len(metas) == 1:
-            name = metas[0].name
-            repo = metas[0].repo
-        else:
-            labels = ", ".join(f"{m.name}@{m.version}" for m in metas)
-            console.print(f"[red]Multiple indexes:[/red] {labels}. Pass --name or --repo.")
-            raise typer.Exit(code=1)
+    name, repo = _resolve_index_selectors(name=name, repo=repo, index_dir=index_dir)
 
     def _on_pull(pulled_name: str, pulled_version: str) -> None:
         console.print(
@@ -260,6 +240,168 @@ def search_cmd(
         if hit.graph_hops:
             body += f"\n[magenta]graph:[/magenta] {' → '.join(hit.graph_hops[:6])}"
         console.print(Panel(body, title=f"{rank}. {hit.title}", border_style="blue"))
+
+
+def _resolve_index_selectors(
+    *,
+    name: Optional[str],
+    repo: Optional[str],
+    index_dir: Path,
+) -> tuple[Optional[str], Optional[str]]:
+    """Pick a default name/repo when only one local index exists."""
+    metas = list_indexes(index_dir)
+    if not metas and name is None:
+        console.print(
+            "[red]No indexes found.[/red] Pass --name to download from the registry, "
+            "or run: docs-search index owner/repo --name …"
+        )
+        raise typer.Exit(code=1)
+
+    resolved_repo = repo
+    if resolved_repo is not None:
+        try:
+            resolved_repo = normalize_github_source(resolved_repo)[1]
+        except ValueError:
+            pass
+
+    resolved_name = name
+    if resolved_name is None and resolved_repo is None:
+        names = sorted({m.name for m in metas})
+        if len(names) == 1:
+            resolved_name = names[0]
+        elif len(metas) == 1:
+            resolved_name = metas[0].name
+            resolved_repo = metas[0].repo
+        else:
+            labels = ", ".join(f"{m.name}@{m.version}" for m in metas)
+            console.print(f"[red]Multiple indexes:[/red] {labels}. Pass --name or --repo.")
+            raise typer.Exit(code=1)
+    return resolved_name, resolved_repo
+
+
+@app.command("ask")
+def ask_cmd(
+    question: str = typer.Argument(..., help="Question to answer from the documentation"),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Saved index name",
+    ),
+    index_version: Optional[str] = typer.Option(
+        None,
+        "--index-version",
+        "-V",
+        help="Saved index version (default: newest matching name/repo)",
+    ),
+    repo: Optional[str] = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help="owner/repo to search (used when --name is omitted)",
+    ),
+    top_k: int = typer.Option(DEFAULT_RAG_TOP_K, "--top", "-k", min=1, max=50),
+    index_dir: Path = typer.Option(DEFAULT_INDEX_DIR, "--index-dir"),
+    neural: float = typer.Option(DEFAULT_NEURAL_WEIGHT, "--neural"),
+    lexical: float = typer.Option(DEFAULT_LEXICAL_WEIGHT, "--lexical"),
+    symbolic: float = typer.Option(DEFAULT_SYMBOLIC_WEIGHT, "--symbolic"),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help=f"Chat model (default: {DEFAULT_LLM_MODEL} or configured LLM model)",
+    ),
+    base_url: Optional[str] = typer.Option(
+        None,
+        "--base-url",
+        help="OpenAI-compatible API base URL (default: env/config or OpenAI)",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        help="API key (default: DOCS_SEARCH_LLM_API_KEY or OPENAI_API_KEY)",
+        envvar=["DOCS_SEARCH_LLM_API_KEY", "OPENAI_API_KEY"],
+    ),
+    registry: Optional[str] = typer.Option(
+        None,
+        "--registry",
+        help="s3://bucket/prefix used when downloading a missing named index",
+    ),
+    no_pull: bool = typer.Option(
+        False,
+        "--no-pull",
+        help="Do not download a missing named index from the registry",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON result"),
+) -> None:
+    """Answer a question with retrieval-augmented generation over a docs index.
+
+    Retrieves hybrid search hits, then asks an OpenAI-compatible chat model to
+    answer using only those excerpts. Works with OpenAI, Ollama, LM Studio, and
+    similar providers.
+    """
+    from docs_search.rag import RagError, ask
+
+    name, repo = _resolve_index_selectors(name=name, repo=repo, index_dir=index_dir)
+
+    def _on_pull(pulled_name: str, pulled_version: str) -> None:
+        console.print(
+            f"[dim]Index not found locally; downloading {pulled_name}@{pulled_version} "
+            f"from registry…[/dim]"
+        )
+
+    try:
+        index = NeurosymbolicIndex.load(
+            repo,
+            index_dir=index_dir,
+            name=name,
+            version=index_version,
+            pull_missing=not no_pull,
+            registry_url=registry,
+            on_pull=_on_pull,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    resolved_model = model or get_llm_model()
+    resolved_base = base_url or get_llm_base_url()
+    console.print(
+        f"[dim]Retrieving from {index.name}@{index.version} · "
+        f"generating with {resolved_model}@{resolved_base}…[/dim]"
+    )
+
+    try:
+        result = ask(
+            index,
+            question,
+            top_k=top_k,
+            neural_weight=neural,
+            lexical_weight=lexical,
+            symbolic_weight=symbolic,
+            model=resolved_model,
+            base_url=resolved_base,
+            api_key=api_key,
+        )
+    except (RagError, ValueError) as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if json_out:
+        import json
+
+        console.print_json(json.dumps(result.model_dump()))
+        return
+
+    console.print(Panel(result.answer, title="Answer", border_style="green"))
+    if result.sources:
+        console.print("[bold]Sources[/bold]")
+        for i, source in enumerate(result.sources, start=1):
+            heading = " › ".join(source.heading_path) if source.heading_path else source.title
+            console.print(
+                f"  [cyan]\\[{i}][/cyan] {source.path} — {heading} "
+                f"[dim](score={source.score:.3f})[/dim]"
+            )
 
 
 @app.command("list")
