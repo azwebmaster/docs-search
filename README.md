@@ -12,6 +12,21 @@ Those signals are fused at query time so symbol-aware questions (APIs, config ke
 
 Indexes are saved with a **name** and **version**, can be published to an **S3 registry**, and browsed through a small **web server**.
 
+## Documentation
+
+Thorough how-to guides live in [`docs/`](docs/README.md):
+
+| Guide | Topic |
+|-------|-------|
+| [Getting started](docs/getting-started.md) | Install, first index, search, and ask |
+| [Indexing](docs/indexing.md) | Named/versioned indexes from GitHub or local paths |
+| [Search](docs/search.md) | Hybrid retrieval, fusion weights, auto-pull |
+| [Ask (RAG)](docs/ask-rag.md) | Grounded answers with OpenAI-compatible LLMs |
+| [S3 registry](docs/registry.md) | Publish, list, and pull shared indexes |
+| [Web server & API](docs/web-api.md) | Browser UI and JSON endpoints |
+| [Configuration](docs/configuration.md) | Paths, `config.json`, and environment variables |
+| [CLI reference](docs/cli-reference.md) | Every command and option |
+
 ## Requirements
 
 - Python 3.12+
