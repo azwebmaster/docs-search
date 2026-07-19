@@ -35,11 +35,16 @@ uv run docs-search index astral-sh/uv --name uv-docs --index-version 1.0.0
 # Search it
 uv run docs-search search "how do I add a dependency?" --name uv-docs --index-version 1.0.0
 
+# Search a named index that is not local yet — downloads from the S3 registry first
+uv run docs-search search "how do I add a dependency?" --name uv-docs
+
 # List local indexes
 uv run docs-search list
 ```
 
 Indexes live under `~/.docs-search/indexes/<name>/<version>/` by default. Cloned repos live under `~/.docs-search/repos/`.
+
+When you search with `--name` and that index is not on disk, `docs-search` downloads it from the configured S3 registry (newest version if `--index-version` is omitted). Pass `--no-pull` to disable that.
 
 ### Local directory
 
@@ -73,6 +78,9 @@ uv run docs-search registry list
 
 # Pull into the local index directory
 uv run docs-search pull uv-docs 1.0.0
+
+# Or pull the newest published version of a name
+uv run docs-search pull uv-docs
 ```
 
 Registry layout:
@@ -130,10 +138,10 @@ uv run ruff check src tests
 |---------|---------|
 | `docs-search ingest <repo>` | Clone/update only |
 | `docs-search index <repo> --name … --index-version …` | Clone + build named/versioned index |
-| `docs-search search <query> --name …` | Hybrid local search |
+| `docs-search search <query> --name …` | Hybrid search (auto-downloads missing named indexes) |
 | `docs-search list` | Show local name/version indexes |
 | `docs-search publish` | Upload a local index to the S3 registry |
-| `docs-search pull <name> <version>` | Download an index from the registry |
+| `docs-search pull <name> [version]` | Download an index from the registry |
 | `docs-search registry set-url s3://…` | Link this machine to an S3 registry |
 | `docs-search registry list` | List published registry indexes |
 | `docs-search serve` | Web UI for local + registry indexes |
