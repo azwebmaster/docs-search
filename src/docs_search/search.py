@@ -16,7 +16,7 @@ from docs_search.embed import embed_query
 from docs_search.extract import extract_symbols
 from docs_search.graph import expand_via_graph
 from docs_search.models import DocChunk, SearchHit
-from docs_search.store import IndexStore
+from docs_search.store import resolve_store
 
 _TOKEN_RE = re.compile(r"[a-z0-9_]+(?:\.[a-z0-9_]+)*", re.I)
 
@@ -43,11 +43,24 @@ class NeurosymbolicIndex:
         self._id_to_idx = {c.id: i for i, c in enumerate(self.chunks)}
 
     @classmethod
-    def load(cls, repo_slug: str, index_dir=None) -> NeurosymbolicIndex:
-        store = IndexStore(repo_slug, index_dir=index_dir)
+    def load(
+        cls,
+        repo_slug: str | None = None,
+        index_dir=None,
+        *,
+        name: str | None = None,
+        version: str | None = None,
+    ) -> NeurosymbolicIndex:
+        store = resolve_store(
+            name=name,
+            version=version,
+            repo=repo_slug,
+            index_dir=index_dir,
+        )
         if not store.exists():
+            label = name or repo_slug or "index"
             raise FileNotFoundError(
-                f"No local index for {repo_slug!r}. Run: docs-search index {repo_slug}"
+                f"No local index for {label!r}. Run: docs-search index <source> --name …"
             )
         meta = store.load_meta()
         return cls(

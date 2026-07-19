@@ -4,7 +4,15 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from docs_search.config import DEFAULT_EMBED_MODEL, DEFAULT_INDEX_DIR, DEFAULT_REPOS_DIR
+from docs_search.config import (
+    DEFAULT_EMBED_MODEL,
+    DEFAULT_INDEX_DIR,
+    DEFAULT_INDEX_VERSION,
+    DEFAULT_REPOS_DIR,
+    default_name_from_repo,
+    sanitize_index_name,
+    sanitize_index_version,
+)
 from docs_search.embed import embed_texts
 from docs_search.extract import extract_repo_chunks
 from docs_search.graph import build_knowledge_graph
@@ -19,6 +27,8 @@ def index_github_repo(
     source: str,
     *,
     branch: str | None = None,
+    name: str | None = None,
+    version: str = DEFAULT_INDEX_VERSION,
     repos_dir: Path | None = None,
     index_dir: Path | None = None,
     include_dirs: list[str] | None = None,
@@ -34,6 +44,7 @@ def index_github_repo(
 
     repos_dir = repos_dir or DEFAULT_REPOS_DIR
     index_dir = index_dir or DEFAULT_INDEX_DIR
+    version = sanitize_index_version(version)
 
     log(f"Fetching {source}…")
     repo_root, repo_slug = clone_or_update(
@@ -42,6 +53,7 @@ def index_github_repo(
         branch=branch,
         force=force_clone,
     )
+    index_name = sanitize_index_name(name) if name else default_name_from_repo(repo_slug)
 
     log("Extracting documentation (symbolic layer)…")
     files = iter_doc_files(repo_root, include_dirs=include_dirs)
@@ -60,6 +72,8 @@ def index_github_repo(
     embeddings = embed_texts(texts, model_name=embed_model)
 
     meta = IndexMeta(
+        name=index_name,
+        version=version,
         repo=repo_slug,
         source=normalize_github_source(source)[0],
         chunk_count=len(chunks),
@@ -69,7 +83,7 @@ def index_github_repo(
         created_at=datetime.now(timezone.utc).isoformat(),
     )
 
-    store = IndexStore(repo_slug, index_dir=index_dir)
+    store = IndexStore(index_name, version, index_dir=index_dir)
     out = store.save(chunks, embeddings, edges, graph, meta)
     log(f"Index written to {out}")
     return meta
@@ -79,6 +93,8 @@ def index_local_path(
     path: Path,
     *,
     repo_slug: str | None = None,
+    name: str | None = None,
+    version: str = DEFAULT_INDEX_VERSION,
     index_dir: Path | None = None,
     include_dirs: list[str] | None = None,
     embed_model: str = DEFAULT_EMBED_MODEL,
@@ -96,6 +112,8 @@ def index_local_path(
 
     repo_slug = repo_slug or f"local/{path.name}"
     index_dir = index_dir or DEFAULT_INDEX_DIR
+    version = sanitize_index_version(version)
+    index_name = sanitize_index_name(name) if name else default_name_from_repo(repo_slug)
 
     log("Extracting documentation (symbolic layer)…")
     files = iter_doc_files(path, include_dirs=include_dirs or ["."])
@@ -112,6 +130,8 @@ def index_local_path(
     embeddings = embed_texts(texts, model_name=embed_model)
 
     meta = IndexMeta(
+        name=index_name,
+        version=version,
         repo=repo_slug,
         source=str(path),
         chunk_count=len(chunks),
@@ -120,7 +140,7 @@ def index_local_path(
         embed_model=embed_model,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
-    store = IndexStore(repo_slug, index_dir=index_dir)
+    store = IndexStore(index_name, version, index_dir=index_dir)
     store.save(chunks, embeddings, edges, graph, meta)
     log(f"Index written to {store.root}")
     return meta
